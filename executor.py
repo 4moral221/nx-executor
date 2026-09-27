@@ -68,7 +68,7 @@ EXECUTOR_API_KEY = os.environ.get("EXECUTOR_API_KEY")
 
 _rate_limit = {}
 _rate_limit_lock = threading.Lock()
-_RATE_LIMIT_MAX = 10
+_RATE_LIMIT_MAX = 5
 _RATE_LIMIT_WINDOW = 60
 
 def _rate_limit_check():
