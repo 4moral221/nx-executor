@@ -11,8 +11,10 @@ RUNNERS = {
 }
 
 MAX_MEMORY_BYTES = 100 * 1024 * 1024  # 100MB per execution
-MAX_CPU_SECONDS = 5
+MAX_CPU_SECONDS = 30
 MAX_CODE_LENGTH = 100_000
+EXEC_TIMEOUT = 30
+COMPILE_TIMEOUT = 30
 
 def limit_resources():
     resource.setrlimit(resource.RLIMIT_AS, (MAX_MEMORY_BYTES, MAX_MEMORY_BYTES))
@@ -20,21 +22,12 @@ def limit_resources():
 
 EXECUTOR_API_KEY = os.environ.get("EXECUTOR_API_KEY")
 
-def require_api_key():
-    if not EXECUTOR_API_KEY:
-        return False
-    key = request.headers.get("x-api-key")
-    if not key or key != EXECUTOR_API_KEY:
-        return False
-    return True
-
 @app.route("/")
 def health():
     return jsonify({"status": "ok"})
 
 @app.route("/execute", methods=["POST"])
 def execute():
-    # Auth check
     if EXECUTOR_API_KEY:
         key = request.headers.get("x-api-key")
         if not key or key != EXECUTOR_API_KEY:
@@ -67,7 +60,7 @@ def execute():
             binary = f"/tmp/{job_id}.out"
             compile_result = subprocess.run(
                 ["gcc", filename, "-o", binary],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True, text=True, timeout=COMPILE_TIMEOUT,
                 preexec_fn=limit_resources
             )
             if compile_result.returncode != 0:
@@ -79,14 +72,14 @@ def execute():
                 })
             result = subprocess.run(
                 [binary],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, timeout=EXEC_TIMEOUT,
                 input=stdin_data if stdin_data else None,
                 preexec_fn=limit_resources
             )
         else:
             result = subprocess.run(
                 runner["cmd"] + [filename],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, timeout=EXEC_TIMEOUT,
                 input=stdin_data if stdin_data else None,
                 preexec_fn=limit_resources
             )
