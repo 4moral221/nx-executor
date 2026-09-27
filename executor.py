@@ -12,10 +12,21 @@ RUNNERS = {
 
 MAX_MEMORY_BYTES = 100 * 1024 * 1024  # 100MB per execution
 MAX_CPU_SECONDS = 5
+MAX_CODE_LENGTH = 100_000
 
 def limit_resources():
     resource.setrlimit(resource.RLIMIT_AS, (MAX_MEMORY_BYTES, MAX_MEMORY_BYTES))
     resource.setrlimit(resource.RLIMIT_CPU, (MAX_CPU_SECONDS, MAX_CPU_SECONDS))
+
+EXECUTOR_API_KEY = os.environ.get("EXECUTOR_API_KEY")
+
+def require_api_key():
+    if not EXECUTOR_API_KEY:
+        return False
+    key = request.headers.get("x-api-key")
+    if not key or key != EXECUTOR_API_KEY:
+        return False
+    return True
 
 @app.route("/")
 def health():
@@ -23,26 +34,41 @@ def health():
 
 @app.route("/execute", methods=["POST"])
 def execute():
-    data = request.get_json()
+    # Auth check
+    if EXECUTOR_API_KEY:
+        key = request.headers.get("x-api-key")
+        if not key or key != EXECUTOR_API_KEY:
+            return jsonify({"error": "unauthorized"}), 401
+
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "invalid or missing JSON body"}), 400
+
     lang = data.get("language")
-    code = data.get("code", "")
+    code = data.get("code", "") or ""
+    stdin_data = data.get("stdin", "")
 
     if lang not in RUNNERS:
         return jsonify({"error": f"unsupported language: {lang}"}), 400
 
+    if len(code) > MAX_CODE_LENGTH:
+        return jsonify({"error": f"code exceeds maximum length {MAX_CODE_LENGTH}"}), 400
+
     runner = RUNNERS[lang]
     job_id = str(uuid.uuid4())
     filename = f"/tmp/{job_id}.{runner['ext']}"
-
-    with open(filename, "w") as f:
-        f.write(code)
+    binary = None
 
     try:
+        with open(filename, "w") as f:
+            f.write(code)
+
         if runner.get("compile"):
             binary = f"/tmp/{job_id}.out"
             compile_result = subprocess.run(
                 ["gcc", filename, "-o", binary],
-                capture_output=True, text=True, timeout=10
+                capture_output=True, text=True, timeout=10,
+                preexec_fn=limit_resources
             )
             if compile_result.returncode != 0:
                 return jsonify({
@@ -52,14 +78,16 @@ def execute():
                     "stage": "compile"
                 })
             result = subprocess.run(
-                [binary], capture_output=True, text=True, timeout=5,
+                [binary],
+                capture_output=True, text=True, timeout=5,
+                input=stdin_data if stdin_data else None,
                 preexec_fn=limit_resources
             )
-            os.remove(binary)
         else:
             result = subprocess.run(
                 runner["cmd"] + [filename],
                 capture_output=True, text=True, timeout=5,
+                input=stdin_data if stdin_data else None,
                 preexec_fn=limit_resources
             )
 
@@ -72,7 +100,15 @@ def execute():
         return jsonify({"error": "timeout"}), 408
     finally:
         if os.path.exists(filename):
-            os.remove(filename)
+            try:
+                os.remove(filename)
+            except Exception:
+                pass
+        if binary and os.path.exists(binary):
+            try:
+                os.remove(binary)
+            except Exception:
+                pass
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 2000))
