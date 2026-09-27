@@ -19,7 +19,7 @@ RUNNERS = {
     "c": {"ext": "c", "compile": True},
 }
 
-MAX_MEMORY_BYTES = 100 * 1024 * 1024
+MAX_MEMORY_BYTES = 256 * 1024 * 1024
 MAX_CPU_SECONDS = 30
 MAX_CODE_LENGTH = 100_000
 MAX_STDIN_LENGTH = 4 * 1024
@@ -45,8 +45,8 @@ _RUN_WRAPPER = (
     as_=MAX_MEMORY_BYTES,
     cpu=MAX_CPU_SECONDS,
     fs=10 * 1024 * 1024,
-    np=20,
-    nf=64,
+    np=40,
+    nf=128,
 )
 
 _COMPILE_WRAPPER = (
@@ -61,7 +61,7 @@ _COMPILE_WRAPPER = (
 ).format(
     cpu=MAX_CPU_SECONDS,
     fs=10 * 1024 * 1024,
-    nf=64,
+    nf=128,
 )
 
 EXECUTOR_API_KEY = os.environ.get("EXECUTOR_API_KEY")
