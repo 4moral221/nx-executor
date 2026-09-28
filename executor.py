@@ -38,9 +38,8 @@ MAX_OUTPUT_CHARS = 2000
 MAX_OUTPUT_BYTES = 64 * 1024
 
 # Per-job resource limits
-# V8 (Node.js) pointer compression requires reserving a 4GB virtual address space mapping at init.
+# V8 (Node.js) pointer compression requires reserving a virtual address space mapping at init.
 RLIMIT_AS = 4 * 1024 * 1024 * 1024   # 4GB virtual address space cap
-RLIMIT_DATA = 512 * 1024 * 1024      # 512MB heap/data cap
 RLIMIT_STACK = 8 * 1024 * 1024       # 8MB stack (prevents stack-based abuse)
 RLIMIT_CPU = MAX_CPU_SECONDS
 RLIMIT_FSIZE = 10 * 1024 * 1024
@@ -71,10 +70,6 @@ def _preexec_limits():
         pass
     try:
         resource.setrlimit(resource.RLIMIT_NOFILE, (RLIMIT_NOFILE, RLIMIT_NOFILE))
-    except Exception:
-        pass
-    try:
-        resource.setrlimit(resource.RLIMIT_DATA, (RLIMIT_DATA, RLIMIT_DATA))
     except Exception:
         pass
     try:
