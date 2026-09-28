@@ -19,12 +19,12 @@ RUNNERS = {
     "c": {"ext": "c", "compile": True},
 }
 
-MAX_MEMORY_BYTES = 256 * 1024 * 1024
+MAX_MEMORY_BYTES = 100 * 1024 * 1024
 MAX_CPU_SECONDS = 30
 MAX_CODE_LENGTH = 100_000
 MAX_STDIN_LENGTH = 4 * 1024
-EXEC_TIMEOUT = 30
-COMPILE_TIMEOUT = 30
+EXEC_TIMEOUT = 15
+COMPILE_TIMEOUT = 15
 MAX_OUTPUT_CHARS = 2000
 MAX_OUTPUT_BYTES = 64 * 1024
 
@@ -45,8 +45,8 @@ _RUN_WRAPPER = (
     as_=MAX_MEMORY_BYTES,
     cpu=MAX_CPU_SECONDS,
     fs=10 * 1024 * 1024,
-    np=40,
-    nf=128,
+    np=20,
+    nf=64,
 )
 
 _COMPILE_WRAPPER = (
@@ -61,14 +61,14 @@ _COMPILE_WRAPPER = (
 ).format(
     cpu=MAX_CPU_SECONDS,
     fs=10 * 1024 * 1024,
-    nf=128,
+    nf=64,
 )
 
 EXECUTOR_API_KEY = os.environ.get("EXECUTOR_API_KEY")
 
 _rate_limit = {}
 _rate_limit_lock = threading.Lock()
-_RATE_LIMIT_MAX = 5
+_RATE_LIMIT_MAX = 10
 _RATE_LIMIT_WINDOW = 60
 
 def _rate_limit_check():
