@@ -23,7 +23,7 @@ RUNNERS = {
     "bash": {"ext": "sh", "cmd": ["bash"]},
     "c": {"ext": "c", "compile_cmd": ["gcc"]},
     "cpp": {"ext": "cpp", "compile_cmd": ["g++"]},
-    "node": {"ext": "js", "cmd": ["node"]},
+    "node": {"ext": "js", "cmd": ["node", "--max-old-space-size=128"]},
     "ruby": {"ext": "rb", "cmd": ["ruby"]},
     "php": {"ext": "php", "cmd": ["php"]},
 }
@@ -38,9 +38,10 @@ MAX_OUTPUT_CHARS = 2000
 MAX_OUTPUT_BYTES = 64 * 1024
 
 # Per-job resource limits
-RLIMIT_AS = MAX_MEMORY_BYTES         # 512MB address space (runtimes need ~50-80MB baseline)
-RLIMIT_DATA = 100 * 1024 * 1024     # 100MB heap/data (limits user code, not runtime overhead)
-RLIMIT_STACK = 8 * 1024 * 1024      # 8MB stack (prevents stack-based abuse)
+# V8 (Node.js) pointer compression requires reserving a 4GB virtual address space mapping at init.
+RLIMIT_AS = 4 * 1024 * 1024 * 1024   # 4GB virtual address space cap
+RLIMIT_DATA = 512 * 1024 * 1024      # 512MB heap/data cap
+RLIMIT_STACK = 8 * 1024 * 1024       # 8MB stack (prevents stack-based abuse)
 RLIMIT_CPU = MAX_CPU_SECONDS
 RLIMIT_FSIZE = 10 * 1024 * 1024
 RLIMIT_NPROC = 256
@@ -53,48 +54,49 @@ _NON_PRIV_GID = 65534
 def _preexec_limits():
     """Run in child before exec: set rlimits and drop privileges.
     Only sets RLIMIT_NPROC when UID isolation succeeds, since applying it
-    to the shared service user would starve gunicorn and cause fork failures."""
+    to the shared service user would starve gunicorn and cause fork failures.
+    Catches exceptions silently to avoid leaking setup log lines into child stderr."""
     # Safe per-process limits (these only affect this child)
     try:
         resource.setrlimit(resource.RLIMIT_AS, (RLIMIT_AS, RLIMIT_AS))
-    except Exception as e:
-        log.info("setrlimit RLIMIT_AS failed: %s", e)
+    except Exception:
+        pass
     try:
         resource.setrlimit(resource.RLIMIT_CPU, (RLIMIT_CPU, RLIMIT_CPU))
-    except Exception as e:
-        log.info("setrlimit RLIMIT_CPU failed: %s", e)
+    except Exception:
+        pass
     try:
         resource.setrlimit(resource.RLIMIT_FSIZE, (RLIMIT_FSIZE, RLIMIT_FSIZE))
-    except Exception as e:
-        log.info("setrlimit RLIMIT_FSIZE failed: %s", e)
+    except Exception:
+        pass
     try:
         resource.setrlimit(resource.RLIMIT_NOFILE, (RLIMIT_NOFILE, RLIMIT_NOFILE))
-    except Exception as e:
-        log.info("setrlimit RLIMIT_NOFILE failed: %s", e)
+    except Exception:
+        pass
     try:
         resource.setrlimit(resource.RLIMIT_DATA, (RLIMIT_DATA, RLIMIT_DATA))
-    except Exception as e:
-        log.info("setrlimit RLIMIT_DATA failed: %s", e)
+    except Exception:
+        pass
     try:
         resource.setrlimit(resource.RLIMIT_STACK, (RLIMIT_STACK, RLIMIT_STACK))
-    except Exception as e:
-        log.info("setrlimit RLIMIT_STACK failed: %s", e)
+    except Exception:
+        pass
     # UID isolation — attempt to drop to nobody
     uid_isolated = False
     try:
         os.setgid(_NON_PRIV_GID)
         os.setuid(_NON_PRIV_UID)
         uid_isolated = True
-    except Exception as e:
-        log.info("UID isolation failed (not root): %s", e)
+    except Exception:
+        pass
     # Only limit NPROC if we successfully switched to an isolated user.
     # When running as the same user as gunicorn, this limit applies to ALL
     # processes under that UID and will starve the service.
     if uid_isolated:
         try:
             resource.setrlimit(resource.RLIMIT_NPROC, (RLIMIT_NPROC, RLIMIT_NPROC))
-        except Exception as e:
-            log.info("setrlimit RLIMIT_NPROC failed: %s", e)
+        except Exception:
+            pass
 
 EXECUTOR_API_KEY = os.environ.get("EXECUTOR_API_KEY")
 
