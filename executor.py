@@ -9,6 +9,7 @@ from pathlib import Path
 from flask import Flask, request, jsonify
 import subprocess
 import uuid
+import resource
 
 app = Flask(__name__)
 
@@ -32,46 +33,49 @@ COMPILE_TIMEOUT = 15
 MAX_OUTPUT_CHARS = 2000
 MAX_OUTPUT_BYTES = 64 * 1024
 
-# Exec-wrapper: applies rlimits in a normal child process (no preexec_fn),
-# then execs the target. Survives gevent fork hazards and preserves limits.
-_RUN_WRAPPER = (
-    "import resource,os,sys\n"
-    "def _s(r,v):\n"
-    "    try:\n"
-    "        resource.setrlimit(r,(v,v))\n"
-    "    except Exception as e:\n"
-    "        import sys\n"
-    "        sys.stderr.write(f'RLIMIT set failed: {e}\\n')\n"
-    "_s(resource.RLIMIT_AS,{as_})\n"
-    "_s(resource.RLIMIT_CPU,{cpu})\n"
-    "_s(resource.RLIMIT_FSIZE,{fs})\n"
-    "_s(resource.RLIMIT_NPROC,{np})\n"
-    "_s(resource.RLIMIT_NOFILE,{nf})\n"
-    "os.execvp(sys.argv[1], sys.argv[1:])\n"
-).format(
-    as_=MAX_MEMORY_BYTES,
-    cpu=MAX_CPU_SECONDS,
-    fs=10 * 1024 * 1024,
-    np=64,
-    nf=64,
-)
+# Per-job resource limits
+RLIMIT_AS = MAX_MEMORY_BYTES
+RLIMIT_CPU = MAX_CPU_SECONDS
+RLIMIT_FSIZE = 10 * 1024 * 1024
+RLIMIT_NPROC = 256
+RLIMIT_NOFILE = 256
 
-_COMPILE_WRAPPER = (
-    "import resource,os,sys\n"
-    "def _s(r,v):\n"
-    "    try: resource.setrlimit(r,(v,v))\n"
-    "    except Exception as e:\n"
-    "        import sys\n"
-    "        sys.stderr.write(f'RLIMIT set failed: {e}\\n')\n"
-    "_s(resource.RLIMIT_CPU,{cpu})\n"
-    "_s(resource.RLIMIT_FSIZE,{fs})\n"
-    "_s(resource.RLIMIT_NOFILE,{nf})\n"
-    "os.execvp(sys.argv[1], sys.argv[1:])\n"
-).format(
-    cpu=MAX_CPU_SECONDS,
-    fs=10 * 1024 * 1024,
-    nf=64,
-)
+# UID isolation target – nobody on most Linux containers
+_NON_PRIV_UID = 65534
+_NON_PRIV_GID = 65534
+
+def _preexec_limits():
+    """Run in child before exec: set rlimits and drop privileges.
+    Logs setuid/setrlimit failures at INFO per requirements."""
+    try:
+        resource.setrlimit(resource.RLIMIT_AS, (RLIMIT_AS, RLIMIT_AS))
+    except Exception as e:
+        log.info("setrlimit RLIMIT_AS failed: %s", e)
+    try:
+        resource.setrlimit(resource.RLIMIT_CPU, (RLIMIT_CPU, RLIMIT_CPU))
+    except Exception as e:
+        log.info("setrlimit RLIMIT_CPU failed: %s", e)
+    try:
+        resource.setrlimit(resource.RLIMIT_FSIZE, (RLIMIT_FSIZE, RLIMIT_FSIZE))
+    except Exception as e:
+        log.info("setrlimit RLIMIT_FSIZE failed: %s", e)
+    try:
+        resource.setrlimit(resource.RLIMIT_NPROC, (RLIMIT_NPROC, RLIMIT_NPROC))
+    except Exception as e:
+        log.info("setrlimit RLIMIT_NPROC failed: %s", e)
+    try:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (RLIMIT_NOFILE, RLIMIT_NOFILE))
+    except Exception as e:
+        log.info("setrlimit RLIMIT_NOFILE failed: %s", e)
+    # UID isolation
+    try:
+        os.setgid(_NON_PRIV_GID)
+    except Exception as e:
+        log.info("setgid failed: %s", e)
+    try:
+        os.setuid(_NON_PRIV_UID)
+    except Exception as e:
+        log.info("setuid failed: %s", e)
 
 EXECUTOR_API_KEY = os.environ.get("EXECUTOR_API_KEY")
 
@@ -136,9 +140,7 @@ def _kill_tree(proc):
 
 def _run_capped(cmd, stdin_data=None, timeout=EXEC_TIMEOUT):
     """Run cmd with output streamed through bounded readers.
-
-    Returns (returncode, stdout, stderr, timed_out, overflowed).
-    """
+    Uses preexec_limits for UID isolation and rlimit enforcement."""
     proc = subprocess.Popen(
         cmd,
         stdin=subprocess.PIPE if stdin_data else subprocess.DEVNULL,
@@ -146,6 +148,7 @@ def _run_capped(cmd, stdin_data=None, timeout=EXEC_TIMEOUT):
         stderr=subprocess.PIPE,
         start_new_session=True,
         close_fds=True,
+        preexec_fn=_preexec_limits,
     )
     out = _CappedReader(proc.stdout, MAX_OUTPUT_BYTES)
     err = _CappedReader(proc.stderr, MAX_OUTPUT_BYTES)
@@ -247,15 +250,26 @@ def execute():
 
         if runner.get("compile"):
             binary = str(job_dir / f"{job_id}.out")
-            compile_result = subprocess.run(
-                ["python3", "-c", _COMPILE_WRAPPER, "gcc", filename, "-o", binary],
-                capture_output=True, text=True, timeout=COMPILE_TIMEOUT
+            # Compile with preexec limits
+            compile_proc = subprocess.Popen(
+                ["gcc", filename, "-o", binary],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+                close_fds=True,
+                preexec_fn=_preexec_limits,
             )
-            if compile_result.returncode != 0:
+            try:
+                stdout_c, stderr_c = compile_proc.communicate(timeout=COMPILE_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                _kill_tree(compile_proc)
+                compile_proc.kill()
+                return jsonify({"error": "compile timeout"}), 408
+            if compile_proc.returncode != 0:
                 return jsonify({
                     "stdout": "",
-                    "stderr": "compile error",
-                    "code": compile_result.returncode,
+                    "stderr": stderr_c.decode("utf-8", "replace")[:MAX_OUTPUT_CHARS],
+                    "code": compile_proc.returncode,
                     "stage": "compile"
                 })
             target = [binary]
@@ -263,17 +277,13 @@ def execute():
             target = runner["cmd"] + [filename]
 
         rc, stdout, stderr, timed_out, overflowed = _run_capped(
-            ["python3", "-c", _RUN_WRAPPER] + target,
+            target,
             stdin_data=stdin_data if stdin_data else None,
             timeout=EXEC_TIMEOUT,
         )
 
         if timed_out:
             return jsonify({"error": "timeout"}), 408
-
-        # Log rlimit warnings from wrapper stderr
-        if "RLIMIT set failed" in stderr:
-            log.info("RLIMIT set failed in job %s", job_id)
 
         return jsonify({
             "stdout": stdout[:MAX_OUTPUT_CHARS],
