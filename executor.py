@@ -21,7 +21,11 @@ log = logging.getLogger(__name__)
 RUNNERS = {
     "python": {"ext": "py", "cmd": ["python3"]},
     "bash": {"ext": "sh", "cmd": ["bash"]},
-    "c": {"ext": "c", "compile": True},
+    "c": {"ext": "c", "compiler": ["gcc"]},
+    "cpp": {"ext": "cpp", "compiler": ["g++"]},
+    "node": {"ext": "js", "cmd": ["node"]},
+    "ruby": {"ext": "rb", "cmd": ["ruby"]},
+    "php": {"ext": "php", "cmd": ["php"]},
 }
 
 MAX_MEMORY_BYTES = 100 * 1024 * 1024
@@ -248,11 +252,12 @@ def execute():
         Path(tmp_path).write_text(code, encoding="utf-8")
         filename = tmp_path
 
-        if runner.get("compile"):
+        if runner.get("compiler"):
             binary = str(job_dir / f"{job_id}.out")
             # Compile with preexec limits
+            compile_cmd = runner["compiler"] + [filename, "-o", binary]
             compile_proc = subprocess.Popen(
-                ["gcc", filename, "-o", binary],
+                compile_cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 start_new_session=True,
@@ -293,6 +298,9 @@ def execute():
         })
     except subprocess.TimeoutExpired:
         return jsonify({"error": "timeout"}), 408
+    except FileNotFoundError as e:
+        log.info("command not found in job %s: %s", job_id if job_id else "unknown", e)
+        return jsonify({"error": f"command not found: {str(e)}"}), 500
     except Exception as e:
         log.info("execution error in job %s: %s", job_id if job_id else "unknown", e)
         return jsonify({"error": "execution error"}), 500
