@@ -4,6 +4,7 @@ import signal
 import shutil
 import tempfile
 import threading
+import logging
 from pathlib import Path
 from flask import Flask, request, jsonify
 import subprocess
@@ -12,6 +13,9 @@ import uuid
 app = Flask(__name__)
 
 os.umask(0o077)
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+log = logging.getLogger(__name__)
 
 RUNNERS = {
     "python": {"ext": "py", "cmd": ["python3"]},
@@ -33,8 +37,11 @@ MAX_OUTPUT_BYTES = 64 * 1024
 _RUN_WRAPPER = (
     "import resource,os,sys\n"
     "def _s(r,v):\n"
-    "    try: resource.setrlimit(r,(v,v))\n"
-    "    except Exception: pass\n"
+    "    try:\n"
+    "        resource.setrlimit(r,(v,v))\n"
+    "    except Exception as e:\n"
+    "        import sys\n"
+    "        sys.stderr.write(f'RLIMIT set failed: {e}\\n')\n"
     "_s(resource.RLIMIT_AS,{as_})\n"
     "_s(resource.RLIMIT_CPU,{cpu})\n"
     "_s(resource.RLIMIT_FSIZE,{fs})\n"
@@ -53,7 +60,9 @@ _COMPILE_WRAPPER = (
     "import resource,os,sys\n"
     "def _s(r,v):\n"
     "    try: resource.setrlimit(r,(v,v))\n"
-    "    except Exception: pass\n"
+    "    except Exception as e:\n"
+    "        import sys\n"
+    "        sys.stderr.write(f'RLIMIT set failed: {e}\\n')\n"
     "_s(resource.RLIMIT_CPU,{cpu})\n"
     "_s(resource.RLIMIT_FSIZE,{fs})\n"
     "_s(resource.RLIMIT_NOFILE,{nf})\n"
@@ -262,6 +271,10 @@ def execute():
         if timed_out:
             return jsonify({"error": "timeout"}), 408
 
+        # Log rlimit warnings from wrapper stderr
+        if "RLIMIT set failed" in stderr:
+            log.info("RLIMIT set failed in job %s", job_id)
+
         return jsonify({
             "stdout": stdout[:MAX_OUTPUT_CHARS],
             "stderr": stderr[:MAX_OUTPUT_CHARS],
@@ -270,7 +283,8 @@ def execute():
         })
     except subprocess.TimeoutExpired:
         return jsonify({"error": "timeout"}), 408
-    except Exception:
+    except Exception as e:
+        log.info("execution error in job %s: %s", job_id if job_id else "unknown", e)
         return jsonify({"error": "execution error"}), 500
     finally:
         try:
