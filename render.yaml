@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: nx-executor
+    env: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: frankfurt
