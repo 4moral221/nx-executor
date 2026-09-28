@@ -50,7 +50,9 @@ _NON_PRIV_GID = 65534
 
 def _preexec_limits():
     """Run in child before exec: set rlimits and drop privileges.
-    Logs setuid/setrlimit failures at INFO per requirements."""
+    Only sets RLIMIT_NPROC when UID isolation succeeds, since applying it
+    to the shared service user would starve gunicorn and cause fork failures."""
+    # Safe per-process limits (these only affect this child)
     try:
         resource.setrlimit(resource.RLIMIT_AS, (RLIMIT_AS, RLIMIT_AS))
     except Exception as e:
@@ -64,22 +66,25 @@ def _preexec_limits():
     except Exception as e:
         log.info("setrlimit RLIMIT_FSIZE failed: %s", e)
     try:
-        resource.setrlimit(resource.RLIMIT_NPROC, (RLIMIT_NPROC, RLIMIT_NPROC))
-    except Exception as e:
-        log.info("setrlimit RLIMIT_NPROC failed: %s", e)
-    try:
         resource.setrlimit(resource.RLIMIT_NOFILE, (RLIMIT_NOFILE, RLIMIT_NOFILE))
     except Exception as e:
         log.info("setrlimit RLIMIT_NOFILE failed: %s", e)
-    # UID isolation
+    # UID isolation — attempt to drop to nobody
+    uid_isolated = False
     try:
         os.setgid(_NON_PRIV_GID)
-    except Exception as e:
-        log.info("setgid failed: %s", e)
-    try:
         os.setuid(_NON_PRIV_UID)
+        uid_isolated = True
     except Exception as e:
-        log.info("setuid failed: %s", e)
+        log.info("UID isolation failed (not root): %s", e)
+    # Only limit NPROC if we successfully switched to an isolated user.
+    # When running as the same user as gunicorn, this limit applies to ALL
+    # processes under that UID and will starve the service.
+    if uid_isolated:
+        try:
+            resource.setrlimit(resource.RLIMIT_NPROC, (RLIMIT_NPROC, RLIMIT_NPROC))
+        except Exception as e:
+            log.info("setrlimit RLIMIT_NPROC failed: %s", e)
 
 EXECUTOR_API_KEY = os.environ.get("EXECUTOR_API_KEY")
 
