@@ -276,13 +276,27 @@ def execute():
     binary = None
 
     try:
+        base_tmp.mkdir(parents=True, exist_ok=True, mode=0o777)
+        try:
+            os.chmod(base_tmp, 0o777)
+        except Exception:
+            pass
+
         job_dir = base_tmp / job_id
-        job_dir.mkdir(parents=True, exist_ok=False, mode=0o700)
+        job_dir.mkdir(parents=True, exist_ok=False, mode=0o777)
+        try:
+            os.chmod(job_dir, 0o777)
+        except Exception:
+            pass
 
         fd, tmp_path = tempfile.mkstemp(dir=str(job_dir), suffix=f".{runner['ext']}")
         os.close(fd)
         Path(tmp_path).write_text(code, encoding="utf-8")
         filename = tmp_path
+        try:
+            os.chmod(filename, 0o755)
+        except Exception:
+            pass
 
         if runner.get("compile_cmd"):
             binary = str(job_dir / f"{job_id}.out")
@@ -309,6 +323,10 @@ def execute():
                     "code": compile_proc.returncode,
                     "stage": "compile"
                 })
+            try:
+                os.chmod(binary, 0o755)
+            except Exception:
+                pass
             target = [binary]
         else:
             target = runner["cmd"] + [filename]
