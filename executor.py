@@ -45,7 +45,7 @@ _RUN_WRAPPER = (
     as_=MAX_MEMORY_BYTES,
     cpu=MAX_CPU_SECONDS,
     fs=10 * 1024 * 1024,
-    np=20,
+    np=64,
     nf=64,
 )
 
