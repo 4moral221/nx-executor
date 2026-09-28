@@ -226,8 +226,18 @@ def execute():
         return jsonify({"error": "invalid or missing JSON body"}), 400
 
     lang = data.get("language")
-    code = data.get("code", "") or ""
-    stdin_data = data.get("stdin", "") or ""
+    code = data.get("code", "")
+    stdin_data = data.get("stdin", "")
+
+    if code is None:
+        code = ""
+    if stdin_data is None:
+        stdin_data = ""
+
+    if not isinstance(code, str):
+        return jsonify({"error": "code payload must be a string"}), 400
+    if not isinstance(stdin_data, str):
+        return jsonify({"error": "stdin payload must be a string"}), 400
 
     if lang not in RUNNERS:
         return jsonify({"error": f"unsupported language: {lang}"}), 400
