@@ -21,8 +21,8 @@ log = logging.getLogger(__name__)
 RUNNERS = {
     "python": {"ext": "py", "cmd": ["python3"]},
     "bash": {"ext": "sh", "cmd": ["bash"]},
-    "c": {"ext": "c", "compiler": ["gcc"]},
-    "cpp": {"ext": "cpp", "compiler": ["g++"]},
+    "c": {"ext": "c", "compile_cmd": ["gcc"]},
+    "cpp": {"ext": "cpp", "compile_cmd": ["g++"]},
     "node": {"ext": "js", "cmd": ["node"]},
     "ruby": {"ext": "rb", "cmd": ["ruby"]},
     "php": {"ext": "php", "cmd": ["php"]},
@@ -247,6 +247,16 @@ def execute():
         return jsonify({"error": "stdin too large"}), 400
 
     runner = RUNNERS[lang]
+    
+    if runner.get("compile_cmd"):
+        executable = runner["compile_cmd"][0]
+        if shutil.which(executable) is None:
+            return jsonify({"error": f"compiler not found: {executable}"}), 500
+    elif runner.get("cmd"):
+        executable = runner["cmd"][0]
+        if shutil.which(executable) is None:
+            return jsonify({"error": f"runtime not found: {executable}"}), 500
+
     job_id = str(uuid.uuid4())
     base_tmp = Path("/tmp/executor")
     job_dir = None
@@ -262,10 +272,10 @@ def execute():
         Path(tmp_path).write_text(code, encoding="utf-8")
         filename = tmp_path
 
-        if runner.get("compiler"):
+        if runner.get("compile_cmd"):
             binary = str(job_dir / f"{job_id}.out")
             # Compile with preexec limits
-            compile_cmd = runner["compiler"] + [filename, "-o", binary]
+            compile_cmd = runner["compile_cmd"] + [filename, "-o", binary]
             compile_proc = subprocess.Popen(
                 compile_cmd,
                 stdout=subprocess.PIPE,
