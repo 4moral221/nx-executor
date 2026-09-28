@@ -38,9 +38,8 @@ MAX_OUTPUT_CHARS = 2000
 MAX_OUTPUT_BYTES = 64 * 1024
 
 # Per-job resource limits
-# V8 (Node.js) pointer compression requires reserving a 4GB virtual address space mapping at init.
+# V8 (Node.js) pointer compression requires reserving a virtual address space mapping at init.
 RLIMIT_AS = 4 * 1024 * 1024 * 1024   # 4GB virtual address space cap
-RLIMIT_DATA = 512 * 1024 * 1024      # 512MB heap/data cap
 RLIMIT_STACK = 8 * 1024 * 1024       # 8MB stack (prevents stack-based abuse)
 RLIMIT_CPU = MAX_CPU_SECONDS
 RLIMIT_FSIZE = 10 * 1024 * 1024
@@ -71,10 +70,6 @@ def _preexec_limits():
         pass
     try:
         resource.setrlimit(resource.RLIMIT_NOFILE, (RLIMIT_NOFILE, RLIMIT_NOFILE))
-    except Exception:
-        pass
-    try:
-        resource.setrlimit(resource.RLIMIT_DATA, (RLIMIT_DATA, RLIMIT_DATA))
     except Exception:
         pass
     try:
@@ -227,6 +222,80 @@ def _run_capped(cmd, stdin_data=None, timeout=EXEC_TIMEOUT):
 def health():
     return jsonify({"status": "ok"})
 
+@app.route("/openapi.json")
+def openapi_spec():
+    return jsonify({
+        "openapi": "3.0.0",
+        "info": {
+            "title": "NX Executor API",
+            "description": "Multi-language code execution service for Python, Node.js, Bash, C, C++, Ruby, and PHP.",
+            "version": "1.0.0"
+        },
+        "servers": [{"url": "https://nx-executor.onrender.com"}],
+        "paths": {
+            "/execute": {
+                "post": {
+                    "summary": "Execute source code in a sandboxed runtime",
+                    "operationId": "executeCode",
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["language", "code"],
+                                    "properties": {
+                                        "language": {
+                                            "type": "string",
+                                            "enum": ["python", "node", "bash", "c", "cpp", "ruby", "php"],
+                                            "description": "Target language runtime"
+                                        },
+                                        "code": {
+                                            "type": "string",
+                                            "description": "Source code to execute"
+                                        },
+                                        "stdin": {
+                                            "type": "string",
+                                            "description": "Optional standard input passed to script"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Execution output",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "code": {"type": "integer", "description": "Process exit code (0 for success)"},
+                                            "stdout": {"type": "string", "description": "Standard output"},
+                                            "stderr": {"type": "string", "description": "Standard error"},
+                                            "truncated": {"type": "boolean", "description": "True if output exceeded length caps"}
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "components": {
+            "securitySchemes": {
+                "ApiKeyAuth": {
+                    "type": "apiKey",
+                    "in": "header",
+                    "name": "x-api-key"
+                }
+            }
+        },
+        "security": [{"ApiKeyAuth": []}]
+    })
+
 @app.route("/execute", methods=["POST"])
 def execute():
     if not EXECUTOR_API_KEY:
@@ -281,13 +350,27 @@ def execute():
     binary = None
 
     try:
+        base_tmp.mkdir(parents=True, exist_ok=True, mode=0o777)
+        try:
+            os.chmod(base_tmp, 0o777)
+        except Exception:
+            pass
+
         job_dir = base_tmp / job_id
-        job_dir.mkdir(parents=True, exist_ok=False, mode=0o700)
+        job_dir.mkdir(parents=True, exist_ok=False, mode=0o777)
+        try:
+            os.chmod(job_dir, 0o777)
+        except Exception:
+            pass
 
         fd, tmp_path = tempfile.mkstemp(dir=str(job_dir), suffix=f".{runner['ext']}")
         os.close(fd)
         Path(tmp_path).write_text(code, encoding="utf-8")
         filename = tmp_path
+        try:
+            os.chmod(filename, 0o755)
+        except Exception:
+            pass
 
         if runner.get("compile_cmd"):
             binary = str(job_dir / f"{job_id}.out")
@@ -314,6 +397,10 @@ def execute():
                     "code": compile_proc.returncode,
                     "stage": "compile"
                 })
+            try:
+                os.chmod(binary, 0o755)
+            except Exception:
+                pass
             target = [binary]
         else:
             target = runner["cmd"] + [filename]
@@ -360,4 +447,4 @@ def execute():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 2000))
-    app.run(host="0.0.0.0", port=2000)
+    app.run(host="0.0.0.0", port=port)
