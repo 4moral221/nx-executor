@@ -222,6 +222,80 @@ def _run_capped(cmd, stdin_data=None, timeout=EXEC_TIMEOUT):
 def health():
     return jsonify({"status": "ok"})
 
+@app.route("/openapi.json")
+def openapi_spec():
+    return jsonify({
+        "openapi": "3.0.0",
+        "info": {
+            "title": "NX Executor API",
+            "description": "Multi-language code execution service for Python, Node.js, Bash, C, C++, Ruby, and PHP.",
+            "version": "1.0.0"
+        },
+        "servers": [{"url": "https://nx-executor.onrender.com"}],
+        "paths": {
+            "/execute": {
+                "post": {
+                    "summary": "Execute source code in a sandboxed runtime",
+                    "operationId": "executeCode",
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["language", "code"],
+                                    "properties": {
+                                        "language": {
+                                            "type": "string",
+                                            "enum": ["python", "node", "bash", "c", "cpp", "ruby", "php"],
+                                            "description": "Target language runtime"
+                                        },
+                                        "code": {
+                                            "type": "string",
+                                            "description": "Source code to execute"
+                                        },
+                                        "stdin": {
+                                            "type": "string",
+                                            "description": "Optional standard input passed to script"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Execution output",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "code": {"type": "integer", "description": "Process exit code (0 for success)"},
+                                            "stdout": {"type": "string", "description": "Standard output"},
+                                            "stderr": {"type": "string", "description": "Standard error"},
+                                            "truncated": {"type": "boolean", "description": "True if output exceeded length caps"}
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "components": {
+            "securitySchemes": {
+                "ApiKeyAuth": {
+                    "type": "apiKey",
+                    "in": "header",
+                    "name": "x-api-key"
+                }
+            }
+        },
+        "security": [{"ApiKeyAuth": []}]
+    })
+
 @app.route("/execute", methods=["POST"])
 def execute():
     if not EXECUTOR_API_KEY:
