@@ -21,10 +21,14 @@ log = logging.getLogger(__name__)
 RUNNERS = {
     "python": {"ext": "py", "cmd": ["python3"]},
     "bash": {"ext": "sh", "cmd": ["bash"]},
-    "c": {"ext": "c", "compile": True},
+    "c": {"ext": "c", "compile_cmd": ["gcc"]},
+    "cpp": {"ext": "cpp", "compile_cmd": ["g++"]},
+    "node": {"ext": "js", "cmd": ["node", "--max-old-space-size=128"]},
+    "ruby": {"ext": "rb", "cmd": ["ruby"]},
+    "php": {"ext": "php", "cmd": ["php"]},
 }
 
-MAX_MEMORY_BYTES = 100 * 1024 * 1024
+MAX_MEMORY_BYTES = 512 * 1024 * 1024
 MAX_CPU_SECONDS = 30
 MAX_CODE_LENGTH = 100_000
 MAX_STDIN_LENGTH = 4 * 1024
@@ -34,7 +38,10 @@ MAX_OUTPUT_CHARS = 2000
 MAX_OUTPUT_BYTES = 64 * 1024
 
 # Per-job resource limits
-RLIMIT_AS = MAX_MEMORY_BYTES
+# V8 (Node.js) pointer compression requires reserving a 4GB virtual address space mapping at init.
+RLIMIT_AS = 4 * 1024 * 1024 * 1024   # 4GB virtual address space cap
+RLIMIT_DATA = 512 * 1024 * 1024      # 512MB heap/data cap
+RLIMIT_STACK = 8 * 1024 * 1024       # 8MB stack (prevents stack-based abuse)
 RLIMIT_CPU = MAX_CPU_SECONDS
 RLIMIT_FSIZE = 10 * 1024 * 1024
 RLIMIT_NPROC = 256
@@ -46,36 +53,50 @@ _NON_PRIV_GID = 65534
 
 def _preexec_limits():
     """Run in child before exec: set rlimits and drop privileges.
-    Logs setuid/setrlimit failures at INFO per requirements."""
+    Only sets RLIMIT_NPROC when UID isolation succeeds, since applying it
+    to the shared service user would starve gunicorn and cause fork failures.
+    Catches exceptions silently to avoid leaking setup log lines into child stderr."""
+    # Safe per-process limits (these only affect this child)
     try:
         resource.setrlimit(resource.RLIMIT_AS, (RLIMIT_AS, RLIMIT_AS))
-    except Exception as e:
-        log.info("setrlimit RLIMIT_AS failed: %s", e)
+    except Exception:
+        pass
     try:
         resource.setrlimit(resource.RLIMIT_CPU, (RLIMIT_CPU, RLIMIT_CPU))
-    except Exception as e:
-        log.info("setrlimit RLIMIT_CPU failed: %s", e)
+    except Exception:
+        pass
     try:
         resource.setrlimit(resource.RLIMIT_FSIZE, (RLIMIT_FSIZE, RLIMIT_FSIZE))
-    except Exception as e:
-        log.info("setrlimit RLIMIT_FSIZE failed: %s", e)
-    try:
-        resource.setrlimit(resource.RLIMIT_NPROC, (RLIMIT_NPROC, RLIMIT_NPROC))
-    except Exception as e:
-        log.info("setrlimit RLIMIT_NPROC failed: %s", e)
+    except Exception:
+        pass
     try:
         resource.setrlimit(resource.RLIMIT_NOFILE, (RLIMIT_NOFILE, RLIMIT_NOFILE))
-    except Exception as e:
-        log.info("setrlimit RLIMIT_NOFILE failed: %s", e)
-    # UID isolation
+    except Exception:
+        pass
+    try:
+        resource.setrlimit(resource.RLIMIT_DATA, (RLIMIT_DATA, RLIMIT_DATA))
+    except Exception:
+        pass
+    try:
+        resource.setrlimit(resource.RLIMIT_STACK, (RLIMIT_STACK, RLIMIT_STACK))
+    except Exception:
+        pass
+    # UID isolation — attempt to drop to nobody
+    uid_isolated = False
     try:
         os.setgid(_NON_PRIV_GID)
-    except Exception as e:
-        log.info("setgid failed: %s", e)
-    try:
         os.setuid(_NON_PRIV_UID)
-    except Exception as e:
-        log.info("setuid failed: %s", e)
+        uid_isolated = True
+    except Exception:
+        pass
+    # Only limit NPROC if we successfully switched to an isolated user.
+    # When running as the same user as gunicorn, this limit applies to ALL
+    # processes under that UID and will starve the service.
+    if uid_isolated:
+        try:
+            resource.setrlimit(resource.RLIMIT_NPROC, (RLIMIT_NPROC, RLIMIT_NPROC))
+        except Exception:
+            pass
 
 EXECUTOR_API_KEY = os.environ.get("EXECUTOR_API_KEY")
 
@@ -222,8 +243,18 @@ def execute():
         return jsonify({"error": "invalid or missing JSON body"}), 400
 
     lang = data.get("language")
-    code = data.get("code", "") or ""
-    stdin_data = data.get("stdin", "") or ""
+    code = data.get("code", "")
+    stdin_data = data.get("stdin", "")
+
+    if code is None:
+        code = ""
+    if stdin_data is None:
+        stdin_data = ""
+
+    if not isinstance(code, str):
+        return jsonify({"error": "code payload must be a string"}), 400
+    if not isinstance(stdin_data, str):
+        return jsonify({"error": "stdin payload must be a string"}), 400
 
     if lang not in RUNNERS:
         return jsonify({"error": f"unsupported language: {lang}"}), 400
@@ -233,6 +264,16 @@ def execute():
         return jsonify({"error": "stdin too large"}), 400
 
     runner = RUNNERS[lang]
+    
+    if runner.get("compile_cmd"):
+        executable = runner["compile_cmd"][0]
+        if shutil.which(executable) is None:
+            return jsonify({"error": f"compiler not found: {executable}"}), 500
+    elif runner.get("cmd"):
+        executable = runner["cmd"][0]
+        if shutil.which(executable) is None:
+            return jsonify({"error": f"runtime not found: {executable}"}), 500
+
     job_id = str(uuid.uuid4())
     base_tmp = Path("/tmp/executor")
     job_dir = None
@@ -248,11 +289,12 @@ def execute():
         Path(tmp_path).write_text(code, encoding="utf-8")
         filename = tmp_path
 
-        if runner.get("compile"):
+        if runner.get("compile_cmd"):
             binary = str(job_dir / f"{job_id}.out")
             # Compile with preexec limits
+            compile_cmd = runner["compile_cmd"] + [filename, "-o", binary]
             compile_proc = subprocess.Popen(
-                ["gcc", filename, "-o", binary],
+                compile_cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 start_new_session=True,
@@ -293,6 +335,9 @@ def execute():
         })
     except subprocess.TimeoutExpired:
         return jsonify({"error": "timeout"}), 408
+    except FileNotFoundError as e:
+        log.info("command not found in job %s: %s", job_id if job_id else "unknown", e)
+        return jsonify({"error": f"command not found: {str(e)}"}), 500
     except Exception as e:
         log.info("execution error in job %s: %s", job_id if job_id else "unknown", e)
         return jsonify({"error": "execution error"}), 500
@@ -315,4 +360,4 @@ def execute():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 2000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=2000)
