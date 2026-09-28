@@ -28,7 +28,7 @@ RUNNERS = {
     "php": {"ext": "php", "cmd": ["php"]},
 }
 
-MAX_MEMORY_BYTES = 100 * 1024 * 1024
+MAX_MEMORY_BYTES = 512 * 1024 * 1024
 MAX_CPU_SECONDS = 30
 MAX_CODE_LENGTH = 100_000
 MAX_STDIN_LENGTH = 4 * 1024
@@ -38,7 +38,9 @@ MAX_OUTPUT_CHARS = 2000
 MAX_OUTPUT_BYTES = 64 * 1024
 
 # Per-job resource limits
-RLIMIT_AS = MAX_MEMORY_BYTES
+RLIMIT_AS = MAX_MEMORY_BYTES         # 512MB address space (runtimes need ~50-80MB baseline)
+RLIMIT_DATA = 100 * 1024 * 1024     # 100MB heap/data (limits user code, not runtime overhead)
+RLIMIT_STACK = 8 * 1024 * 1024      # 8MB stack (prevents stack-based abuse)
 RLIMIT_CPU = MAX_CPU_SECONDS
 RLIMIT_FSIZE = 10 * 1024 * 1024
 RLIMIT_NPROC = 256
@@ -69,6 +71,14 @@ def _preexec_limits():
         resource.setrlimit(resource.RLIMIT_NOFILE, (RLIMIT_NOFILE, RLIMIT_NOFILE))
     except Exception as e:
         log.info("setrlimit RLIMIT_NOFILE failed: %s", e)
+    try:
+        resource.setrlimit(resource.RLIMIT_DATA, (RLIMIT_DATA, RLIMIT_DATA))
+    except Exception as e:
+        log.info("setrlimit RLIMIT_DATA failed: %s", e)
+    try:
+        resource.setrlimit(resource.RLIMIT_STACK, (RLIMIT_STACK, RLIMIT_STACK))
+    except Exception as e:
+        log.info("setrlimit RLIMIT_STACK failed: %s", e)
     # UID isolation — attempt to drop to nobody
     uid_isolated = False
     try:
