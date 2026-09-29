@@ -475,7 +475,7 @@ def _get_or_create_sandbox():
 
         # Create a fresh sandbox with a long timeout (keep-alive via pings)
         log.info("[E2B] Creating new sandbox...")
-        _e2b_sandbox = Sandbox(api_key=E2B_API_KEY, timeout=3600)  # 1 hour timeout
+        _e2b_sandbox = Sandbox(timeout=3600)  # 1 hour timeout
         log.info("[E2B] Sandbox created: %s", _e2b_sandbox.sandbox_id)
         return _e2b_sandbox
 
