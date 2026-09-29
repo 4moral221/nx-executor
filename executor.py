@@ -646,6 +646,7 @@ def _get_or_create_sandbox():
         raise RuntimeError("E2B_API_KEY environment variable not set.")
     try:
         from e2b import Sandbox
+        from e2b.connection_config import ConnectionConfig
     except ImportError:
         raise RuntimeError("e2b package not installed. Run: pip install e2b")
 
@@ -659,9 +660,15 @@ def _get_or_create_sandbox():
                 log.info("[E2B] Existing sandbox unreachable, creating new one...")
                 _e2b_sandbox = None
 
-        # Create a fresh sandbox with a long timeout (keep-alive via pings)
+        # Create a fresh sandbox — pass api_key via ConnectionConfig
         log.info("[E2B] Creating new sandbox...")
-        _e2b_sandbox = Sandbox(timeout=3600)  # 1 hour timeout
+        config = ConnectionConfig(api_key=E2B_API_KEY)
+        _e2b_sandbox = Sandbox(connection_config=config)
+        # Keep sandbox alive for 1 hour
+        try:
+            _e2b_sandbox.set_timeout(3600)
+        except Exception:
+            pass
         log.info("[E2B] Sandbox created: %s", _e2b_sandbox.sandbox_id)
         return _e2b_sandbox
 
