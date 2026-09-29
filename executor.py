@@ -11,6 +11,12 @@ import subprocess
 import uuid
 import resource
 
+# ── E2B sandbox state ────────────────────────────────────────────────────────
+_e2b_sandbox = None
+_e2b_lock = threading.Lock()
+E2B_API_KEY = os.environ.get("E2B_API_KEY")
+E2B_TERMINAL_TIMEOUT = 300  # seconds per command max
+
 app = Flask(__name__)
 
 os.umask(0o077)
@@ -444,6 +450,141 @@ def execute():
                 shutil.rmtree(job_dir, ignore_errors=True)
         except Exception:
             pass
+
+# ── E2B Terminal ─────────────────────────────────────────────────────────────
+
+def _get_or_create_sandbox():
+    """Return the persistent E2B sandbox, creating or reconnecting as needed."""
+    global _e2b_sandbox
+    if not E2B_API_KEY:
+        raise RuntimeError("E2B_API_KEY environment variable not set.")
+    try:
+        from e2b import Sandbox
+    except ImportError:
+        raise RuntimeError("e2b package not installed. Run: pip install e2b")
+
+    with _e2b_lock:
+        # Try to ping existing sandbox
+        if _e2b_sandbox is not None:
+            try:
+                _e2b_sandbox.commands.run("echo ok", timeout=5)
+                return _e2b_sandbox
+            except Exception:
+                log.info("[E2B] Existing sandbox unreachable, creating new one...")
+                _e2b_sandbox = None
+
+        # Create a fresh sandbox with a long timeout (keep-alive via pings)
+        log.info("[E2B] Creating new sandbox...")
+        _e2b_sandbox = Sandbox(api_key=E2B_API_KEY, timeout=3600)  # 1 hour timeout
+        log.info("[E2B] Sandbox created: %s", _e2b_sandbox.sandbox_id)
+        return _e2b_sandbox
+
+
+def _require_api_key():
+    """Return error response if API key missing/wrong, else None."""
+    if not EXECUTOR_API_KEY:
+        return jsonify({"error": "unauthorized"}), 401
+    key = request.headers.get("x-api-key")
+    if not key or key != EXECUTOR_API_KEY:
+        return jsonify({"error": "unauthorized"}), 401
+    return None
+
+
+@app.route("/terminal", methods=["POST"])
+def terminal():
+    """
+    Run a shell command inside a persistent E2B sandbox.
+
+    Body (JSON):
+        cmd       string   Shell command to execute (required)
+        timeout   int      Seconds to wait (default 60, max 300)
+        workdir   string   Working directory inside sandbox (optional)
+
+    Returns:
+        stdout, stderr, exit_code, sandbox_id
+    """
+    err = _require_api_key()
+    if err:
+        return err
+
+    data = request.get_json(silent=True)
+    if not data or not data.get("cmd"):
+        return jsonify({"error": "Missing required field: cmd"}), 400
+
+    cmd = data["cmd"]
+    timeout = min(int(data.get("timeout", 60)), E2B_TERMINAL_TIMEOUT)
+    workdir = data.get("workdir", "/home/user")
+
+    if not isinstance(cmd, str) or len(cmd) > 10_000:
+        return jsonify({"error": "cmd must be a string under 10,000 chars"}), 400
+
+    try:
+        sbx = _get_or_create_sandbox()
+        # Wrap in bash so pipes, &&, etc all work. Run in requested workdir.
+        full_cmd = f"cd {workdir} 2>/dev/null || true && {cmd}"
+        result = sbx.commands.run(full_cmd, timeout=timeout)
+        return jsonify({
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "exit_code": result.exit_code,
+            "sandbox_id": sbx.sandbox_id,
+            "workdir": workdir,
+        })
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 500
+    except Exception as e:
+        log.error("[E2B] Terminal error: %s", e)
+        # If the sandbox died, clear it so next request creates a fresh one
+        global _e2b_sandbox
+        with _e2b_lock:
+            _e2b_sandbox = None
+        return jsonify({"error": f"Sandbox error: {str(e)}"}), 500
+
+
+@app.route("/terminal/status", methods=["GET"])
+def terminal_status():
+    """Check whether an E2B sandbox is currently alive."""
+    err = _require_api_key()
+    if err:
+        return err
+
+    if not E2B_API_KEY:
+        return jsonify({"e2b_configured": False, "sandbox_alive": False})
+
+    with _e2b_lock:
+        sbx = _e2b_sandbox
+
+    if sbx is None:
+        return jsonify({"e2b_configured": True, "sandbox_alive": False, "sandbox_id": None})
+
+    try:
+        sbx.commands.run("echo ok", timeout=5)
+        return jsonify({"e2b_configured": True, "sandbox_alive": True, "sandbox_id": sbx.sandbox_id})
+    except Exception:
+        return jsonify({"e2b_configured": True, "sandbox_alive": False, "sandbox_id": sbx.sandbox_id})
+
+
+@app.route("/terminal/reset", methods=["POST"])
+def terminal_reset():
+    """Kill the current sandbox and force a fresh one on next /terminal call."""
+    err = _require_api_key()
+    if err:
+        return err
+
+    global _e2b_sandbox
+    with _e2b_lock:
+        old = _e2b_sandbox
+        _e2b_sandbox = None
+
+    if old is not None:
+        try:
+            old.kill()
+        except Exception:
+            pass
+        return jsonify({"reset": True, "killed_sandbox_id": old.sandbox_id})
+
+    return jsonify({"reset": True, "killed_sandbox_id": None})
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 2000))
