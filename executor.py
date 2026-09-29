@@ -288,6 +288,101 @@ def openapi_spec():
                         }
                     }
                 }
+            },
+            "/terminal": {
+                "post": {
+                    "summary": "Execute a shell command inside a persistent E2B sandbox",
+                    "operationId": "terminalExecute",
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["cmd"],
+                                    "properties": {
+                                        "cmd": {
+                                            "type": "string",
+                                            "description": "Shell command to execute"
+                                        },
+                                        "timeout": {
+                                            "type": "integer",
+                                            "description": "Seconds to wait (default 60, max 300)"
+                                        },
+                                        "workdir": {
+                                            "type": "string",
+                                            "description": "Working directory inside sandbox (optional)"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Terminal execution output",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "exit_code": {"type": "integer", "description": "Process exit code"},
+                                            "stdout": {"type": "string", "description": "Standard output"},
+                                            "stderr": {"type": "string", "description": "Standard error"},
+                                            "sandbox_id": {"type": "string", "description": "ID of the persistent E2B sandbox"},
+                                            "workdir": {"type": "string", "description": "Current working directory"}
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/terminal/status": {
+                "get": {
+                    "summary": "Check whether an E2B sandbox is currently alive",
+                    "operationId": "terminalStatus",
+                    "responses": {
+                        "200": {
+                            "description": "Sandbox status",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "e2b_configured": {"type": "boolean"},
+                                            "sandbox_alive": {"type": "boolean"},
+                                            "sandbox_id": {"type": "string", "nullable": True}
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/terminal/reset": {
+                "post": {
+                    "summary": "Kill the current sandbox and force a fresh one on next /terminal call",
+                    "operationId": "terminalReset",
+                    "responses": {
+                        "200": {
+                            "description": "Reset result",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "reset": {"type": "boolean"},
+                                            "killed_sandbox_id": {"type": "string", "nullable": True}
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         },
         "components": {
