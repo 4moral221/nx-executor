@@ -235,7 +235,7 @@ def openapi_spec():
         "info": {
             "title": "NX Executor API",
             "description": "Multi-language code execution service for Python, Node.js, Bash, C, C++, Ruby, and PHP.",
-            "version": "1.0.0"
+            "version": "1.1"
         },
         "servers": [{"url": "https://nx-executor.onrender.com"}],
         "paths": {
