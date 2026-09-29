@@ -660,15 +660,9 @@ def _get_or_create_sandbox():
                 log.info("[E2B] Existing sandbox unreachable, creating new one...")
                 _e2b_sandbox = None
 
-        # Create a fresh sandbox — pass api_key via ConnectionConfig
+        # Create a fresh sandbox
         log.info("[E2B] Creating new sandbox...")
-        config = ConnectionConfig(api_key=E2B_API_KEY)
-        _e2b_sandbox = Sandbox(connection_config=config)
-        # Keep sandbox alive for 1 hour
-        try:
-            _e2b_sandbox.set_timeout(3600)
-        except Exception:
-            pass
+        _e2b_sandbox = Sandbox.create(api_key=E2B_API_KEY, timeout=3600)
         log.info("[E2B] Sandbox created: %s", _e2b_sandbox.sandbox_id)
         return _e2b_sandbox
 
